@@ -1,6 +1,6 @@
 name = "Image Compressor"
 description = "Compress large images to save bandwidth and space"
-package = "Spiro"
+package = "Utilities"
 dependencies[] = image
 core = "7.x"
 version = "7.x-1.x-dev"
