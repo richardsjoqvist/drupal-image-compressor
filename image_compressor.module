@@ -1,0 +1,162 @@
+<?php
+/**
+ * Load helper functions
+ */
+require_once(dirname(__FILE__).'/image_compressor.helpers.inc');
+
+/**
+ * Add module to menu
+ *
+ * @return mixed
+ */
+function image_compressor_menu() {
+  $items['admin/config/workflow/image-compressor'] = array(
+    'title' => 'Image Compressor',
+    'description' => ' ',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('image_compressor_admin'),
+    'access arguments' => array('administer image_compressor settings'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  return $items;
+}
+
+/**
+ * Admin form
+ *
+ * @return mixed
+ */
+function image_compressor_admin() {
+  $form = array();
+
+  $form["header"] = array(
+    '#type' => 'markup',
+    '#markup' => '<h2>Image Compressor</h2><p>This module resizes images in <a href="/admin/config/media/file-system">public path configuration (public://)</a> to save space according to the settings below.</p>',
+  );
+
+  if($space_saved = image_compressor_get_total_space_saved()) {
+    $form["spacesaved"] = array(
+      '#type' => 'markup',
+      '#markup' => 'Total space saved: <b>'.format_size($space_saved).'</b>',
+    );
+  }
+
+  $form["image_compressor_width"] = array(
+    '#type' => 'textfield',
+    '#element_validate' => array('element_validate_integer_positive'),
+    '#title' => 'Max width',
+    '#size' => 5,
+    '#default_value' => variable_get("image_compressor_width", 1024),
+    '#required' => true,
+  );
+
+  $form["image_compressor_height"] = array(
+    '#type' => 'textfield',
+    '#element_validate' => array('element_validate_integer_positive'),
+    '#title' => 'Max height',
+    '#size' => 5,
+    '#default_value' => variable_get("image_compressor_height", 768),
+    '#required' => true,
+  );
+
+  $form["image_compressor_jpegquality"] = array(
+    '#type' => 'textfield',
+    '#element_validate' => array('element_validate_integer_positive'),
+    '#title' => 'Jpeg quality (1-100)',
+    '#size' => 3,
+    '#description' => 'This setting temporarily overrides the <a href="/admin/config/media/image-toolkit">GD toolkit JPEG quality</a> setting.',
+    '#default_value' => variable_get("image_compressor_jpegquality", 75),
+    '#required' => true,
+  );
+
+  $form["image_compressor_backup"] = array(
+    '#type' => 'checkbox',
+    '#title' => "Backup original file",
+    '#description' => "Backup original file to prior to resize (future resizes will use the backed up file as original if it exists)",
+    '#default_value' => variable_get("image_compressor_backup", 1),
+    '#required' => false,
+  );
+
+  $form = system_settings_form($form);
+  $form['#submit'][] = 'image_compressor_admin_after_submit';
+  $form['actions']['submit']['#value'] = 'Compress images';
+
+  return $form;
+}
+
+/**
+ * Validate form
+ *
+ * @param $form
+ * @param $form_state
+ * @return mixed|void
+ */
+function image_compressor_admin_validate($form, &$form_state) {
+  $width = (int) $form_state["values"]["image_compressor_width"];
+  if(!$width) {
+    form_set_error("image_compressor_width", "Width must be a positive integer!");
+    return false;
+  }
+  $height = (int) $form_state["values"]["image_compressor_height"];
+  if(!$height) {
+    form_set_error("image_compressor_height", "Height must be a positive integer!");
+    return false;
+  }
+  $jpegquality = (int) $form_state["values"]["image_compressor_jpegquality"];
+  if(!$jpegquality || $jpegquality > 100) {
+    form_set_error("image_compressor_jpegquality", "Jpeg quality must be a positive integer between 1 and 100!");
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Post-submit form handle. Compress images.
+ *
+ * @param $form
+ * @param $form_state
+ * @return mixed
+ */
+function image_compressor_admin_after_submit($form, &$form_state) {
+  // Make sure paths are valid
+  if(!$path = image_compressor_get_files_path()) return false;
+  if(!$backuppath = image_compressor_get_files_path()) return false;
+
+  // Gather files
+  $batch_operations = array();
+  $files_found = 0;
+  if($handle = opendir($path)) {
+    while (false !== ($entry = readdir($handle))) {
+      if(substr($entry,0,1) != '.') {
+        if(!is_file($path.'/'.$entry)) continue;
+        $files_found++;
+        $batch_operations[] = array('image_compressor_batch', array($entry));
+      }
+    }
+    closedir($handle);
+  }
+  $num_operations = count($batch_operations);
+  foreach($batch_operations as $index => &$operation) {
+    $operation[1][] = $index;
+    $operation[1][] = $num_operations;
+  }
+
+  // Are there any files?
+  if(!count($batch_operations)) {
+    if(!$files_found) {
+      drupal_set_message("Could not retrieve file list from filesystem. Make sure your <a href='/admin/config/media/file-system'>public path configuration</a> is correct.", 'error');
+    } else {
+      drupal_set_message("Compressed 0 images", 'status');
+    }
+    return false;
+  }
+
+  // Run batch
+  $batch = array(
+    'title' => t('Compressing images'),
+    'operations' => $batch_operations,
+    'finished' => 'image_compressor_batch_finished',
+    'file' => dirname(__FILE__).'/image_compressor.helpers.inc',
+  );
+  batch_set($batch);
+}
